@@ -1,9 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Heart, LogOut, MessageSquare, Search, UserRound } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { brandNavLogos } from "@/lib/brand-logos";
 import type { Viewer } from "@/lib/marketplace-types";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { isDevelopmentAuthBypassEnabled, isSupabaseConfigured } from "@/lib/supabase/config";
@@ -12,47 +13,96 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-function avatarClass(seed: string) {
-  const palettes = [
-    "from-neutral-950 to-neutral-700",
-    "from-zinc-700 to-stone-500",
-    "from-slate-700 to-zinc-500",
-    "from-stone-800 to-neutral-600",
-  ];
-  const index = seed
-    .split("")
-    .reduce((total, char) => total + char.charCodeAt(0), 0) % palettes.length;
-  return palettes[index];
-}
+const navOpenDuration = 900;
+const navCloseDuration = 600;
 
 export function SiteNavbar({ viewer }: { viewer: Viewer | null }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuMounted, setMenuMounted] = useState(false);
   const [query, setQuery] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const openMenu = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+
+    setMenuMounted(true);
+    setMenuOpen(true);
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+    }
+
+    closeTimerRef.current = window.setTimeout(() => {
+      setMenuMounted(false);
+      closeTimerRef.current = null;
+    }, navCloseDuration);
+  }, []);
 
   useEffect(() => {
-    function onPointerDown(event: MouseEvent) {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
-        setOpen(false);
+    if (!menuOpen) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeMenu();
       }
     }
 
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    function onPointerDown(event: PointerEvent) {
+      if (!navRef.current?.contains(event.target as Node)) {
+        closeMenu();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [closeMenu, menuOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    };
   }, []);
 
-  const navItems = [
-    { href: "/products", label: "Shop" },
-    { href: "/closet", label: "My Closet" },
-    { href: "/trades", label: "Trades" },
+  const primaryLinks = [
+    { href: "/products", label: "SHOP" },
+    { href: "/closet", label: "MY CLOSET" },
+    { href: "/trades", label: "TRADES" },
+    { href: "/messages", label: "MESSAGES" },
+    { href: "/brands", label: "BRANDS" },
+    { href: "/archive", label: "ARCHIVE" },
+    { href: "/communities", label: "COMMUNITIES" },
+    { href: "/rewards", label: "REWARDS" },
+  ];
+
+  const accountLinks = [
+    viewer
+      ? { href: `/user/${viewer.slug}`, label: "ACCOUNT", showDot: true }
+      : { href: `/login?next=${encodeURIComponent(pathname || "/")}`, label: "LOGIN", showDot: true },
+    { href: "/favorites", label: "FAVORITES" },
+    ...(viewer?.isAdmin ? [{ href: "/admin", label: "ADMIN" }] : []),
   ];
 
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextQuery = query.trim();
     router.push(nextQuery ? `/products?q=${encodeURIComponent(nextQuery)}` : "/products");
+    closeMenu();
   }
 
   async function handleSignOut() {
@@ -61,104 +111,196 @@ export function SiteNavbar({ viewer }: { viewer: Viewer | null }) {
       await supabase.auth.signOut();
     }
 
-    setOpen(false);
+    closeMenu();
     router.push("/");
     router.refresh();
   }
 
   return (
-    <header className="sticky top-0 z-40 border-b border-black/10 bg-white/90 backdrop-blur">
-      <div className="px-5 py-6">
-        <div className="mx-auto max-w-[1600px]">
-          <div className="flex items-center justify-between gap-6">
-            <div className="flex min-w-0 items-center gap-8">
-              <Link href="/" className="text-2xl font-semibold tracking-[0.28em] text-black">
-                BARTER
-              </Link>
-              <form onSubmit={handleSearchSubmit} className="relative hidden w-full max-w-md md:block">
-                <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search Chrome Hearts, Supreme, Margiela..."
-                  className="w-full rounded-full border border-black/10 bg-neutral-50 py-2.5 pl-11 pr-4 text-sm outline-none transition focus:border-black"
-                />
-              </form>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-3 lg:gap-4">
-              <nav className="hidden items-center gap-1 md:flex">
-                {navItems.map((item) => {
-                  const active = pathname === item.href;
-                  return (
+    <div
+      ref={navRef}
+      className="brand-logo-font fixed left-1/2 top-4 z-40 w-[min(92vw,560px)] -translate-x-1/2 overflow-hidden rounded-md bg-[#1a1212]/70 text-white shadow-xl backdrop-blur-md"
+    >
+      <header className="relative z-10 flex items-center justify-between px-5 py-3">
+        <Link href="/" className="brand-logo-font text-base text-white hover:opacity-80">
+          BARTER
+        </Link>
+        <button
+          type="button"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          onClick={() => {
+            if (menuOpen) {
+              closeMenu();
+              return;
+            }
+
+            openMenu();
+          }}
+          className="flex h-6 w-8 flex-col items-center justify-center gap-1.5"
+        >
+          <span
+            style={{ transitionDuration: `${menuOpen ? navOpenDuration : navCloseDuration}ms` }}
+            className={cn(
+              "h-px w-6 bg-white transition-transform ease-[cubic-bezier(0.22,1,0.36,1)]",
+              menuOpen ? "translate-y-[3px] rotate-45" : "",
+            )}
+          />
+          <span
+            style={{ transitionDuration: `${menuOpen ? navOpenDuration : navCloseDuration}ms` }}
+            className={cn(
+              "h-px w-6 bg-white transition-transform ease-[cubic-bezier(0.22,1,0.36,1)]",
+              menuOpen ? "-translate-y-[3px] -rotate-45" : "",
+            )}
+          />
+        </button>
+        <Link href="/products" className="text-base font-bold tracking-tight text-white hover:opacity-80">
+          SHOP
+        </Link>
+      </header>
+
+      <div
+        aria-hidden={!menuOpen}
+        style={{
+          transition: menuOpen
+            ? `grid-template-rows ${navOpenDuration}ms cubic-bezier(0.22,1,0.36,1), opacity ${navOpenDuration}ms ease-out`
+            : `grid-template-rows ${navCloseDuration}ms cubic-bezier(0.4,0,1,1), opacity ${Math.round(navCloseDuration * 0.55)}ms ease-in`,
+        }}
+        className={cn(
+          "grid overflow-hidden",
+          menuOpen ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0",
+        )}
+      >
+        {menuMounted ? (
+          <div className="min-h-0 overflow-hidden px-5 pb-6 pt-5">
+          <form onSubmit={handleSearchSubmit}>
+            <label className="flex items-center gap-3 border-b border-white/40 pb-2">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
+                aria-hidden="true"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3-3" />
+              </svg>
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="SEARCH BARTER"
+                className="w-full bg-transparent text-sm font-semibold tracking-widest text-white placeholder:text-white/60 focus:outline-none"
+              />
+            </label>
+          </form>
+
+          <nav className="mt-10 grid grid-cols-3 gap-x-6 text-sm font-bold tracking-tight">
+            {/* Col 1 — first half of primary links */}
+            <ul className="space-y-1.5">
+              {primaryLinks.slice(0, 4).map((item) => {
+                const active = pathname === item.href;
+                return (
+                  <li key={item.href}>
                     <Link
-                      key={item.href}
                       href={item.href}
-                      className={cn(
-                        "rounded-full px-4 py-2 text-sm font-medium transition",
-                        active ? "bg-black text-white" : "text-neutral-600 hover:bg-neutral-100 hover:text-black",
-                      )}
+                      onClick={closeMenu}
+                      className={cn("hover:opacity-80", active ? "underline underline-offset-4" : "")}
                     >
                       {item.label}
                     </Link>
-                  );
-                })}
-              </nav>
-              <Link href="/messages" className="rounded-full border border-black/10 p-2 transition hover:bg-black hover:text-white">
-                <MessageSquare className="h-4 w-4" />
-              </Link>
-              <Link
-                href="/favorites"
-                className="rounded-full border border-red-200 bg-red-50 p-2 text-red-500 transition hover:bg-red-100 hover:text-red-600"
-              >
-                <Heart className="h-4 w-4 fill-current" />
-              </Link>
-              {viewer ? (
-                <div className="relative" ref={ref}>
-                  <button
-                    type="button"
-                    onClick={() => setOpen((value) => !value)}
-                    className="flex items-center gap-2 rounded-full border border-black/10 bg-white p-1 pr-3"
-                  >
-                    <div
-                      className={cn(
-                        "grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br text-xs font-semibold text-white",
-                        avatarClass(viewer.avatarSeed),
-                      )}
+                  </li>
+                );
+              })}
+            </ul>
+            {/* Col 2 — second half of primary links */}
+            <ul className="space-y-1.5">
+              {primaryLinks.slice(4).map((item) => {
+                const active = pathname === item.href;
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      onClick={closeMenu}
+                      className={cn("hover:opacity-80", active ? "underline underline-offset-4" : "")}
                     >
-                      {viewer.initials}
-                    </div>
-                    <span className="text-sm font-medium text-black">{viewer.handle}</span>
+                      {item.label}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+            {/* Col 3 — account links */}
+            <ul className="space-y-1.5">
+              {accountLinks.map((item) => {
+                const active = pathname === item.href;
+                return (
+                  <li key={item.href} className={cn(item.showDot ? "flex items-center gap-2" : "")}>
+                    {item.showDot ? <span className="inline-block h-1.5 w-1.5 rounded-full bg-white" /> : null}
+                    <Link
+                      href={item.href}
+                      onClick={closeMenu}
+                      className={cn("hover:opacity-80", active ? "underline underline-offset-4" : "")}
+                    >
+                      {item.label}
+                    </Link>
+                  </li>
+                );
+              })}
+              {viewer ? (
+                <li>
+                  <button type="button" onClick={() => void handleSignOut()} className="font-bold hover:opacity-80">
+                    SIGN OUT
                   </button>
-                  {open ? (
-                    <div className="absolute right-0 top-12 w-64 rounded-3xl border border-black/10 bg-white p-2 shadow-xl">
-                      <Link href="/closet" className="block rounded-2xl px-4 py-3 text-sm text-black transition hover:bg-neutral-100">
-                        Closet
-                      </Link>
-                      <Link href="/trades" className="block rounded-2xl px-4 py-3 text-sm text-black transition hover:bg-neutral-100">
-                        Trade History
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={handleSignOut}
-                        className="flex w-full items-center gap-2 rounded-2xl px-4 py-3 text-left text-sm text-black transition hover:bg-neutral-100"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Sign out
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <Link href={`/login?next=${encodeURIComponent(pathname || "/")}`} className="inline-flex items-center gap-2 rounded-full border border-black px-4 py-2 text-sm font-medium text-black transition hover:bg-black hover:text-white">
-                  <UserRound className="h-4 w-4" />
-                  Sign in
+                </li>
+              ) : null}
+            </ul>
+          </nav>
+
+          {/* Brands grid */}
+          <div className="mt-10">
+            <div className="grid grid-cols-4 gap-x-4 gap-y-5">
+              {brandNavLogos.map((brand) => (
+                <Link
+                  key={brand.href}
+                  href={brand.href}
+                  onClick={closeMenu}
+                  className="flex items-center justify-center opacity-60 transition hover:opacity-100"
+                  aria-label={brand.name}
+                >
+                  <Image
+                    src={brand.src}
+                    alt={brand.name}
+                    width={brand.width}
+                    height={brand.height}
+                    className="h-7 w-auto max-w-[88px] object-contain [filter:invert(1)_brightness(1.1)]"
+                    sizes="88px"
+                  />
                 </Link>
-              )}
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-10">
+            <div className="flex items-start">
+              <h1 className="brand-logo-font text-6xl leading-none tracking-tighter sm:text-7xl">
+                BARTER
+              </h1>
+              <span className="ml-1 mt-1 text-[10px] font-bold">TM</span>
+            </div>
+            <div className="mt-3 grid grid-cols-3 items-center text-[10px] font-semibold tracking-widest text-white/80">
+              <span>NOUN</span>
+              <span className="text-center italic">/bar-ter/</span>
+              <span className="text-right">MEMBER MARKETPLACE</span>
             </div>
           </div>
         </div>
+        ) : null}
       </div>
-    </header>
+    </div>
   );
 }

@@ -13,8 +13,16 @@ export type UserProfile = {
   responseRate: string;
   bio: string;
   avatarSeed: string;
+  points?: number;
   online?: boolean;
+  isAdmin?: boolean;
+  stripeAccountId?: string;
+  stripeChargesEnabled?: boolean;
+  stripePayoutsEnabled?: boolean;
 };
+
+export type ModerationStatus = "pending" | "approved" | "denied" | "flagged" | "needs_info";
+export type VerificationStatus = "unverified" | "verified" | "failed" | "needs_review";
 
 export type Product = {
   id: number;
@@ -29,6 +37,7 @@ export type Product = {
   price: number;
   originalPrice?: number;
   sellerId: string;
+  sellerProfileId?: string;
   listingTime: string;
   badge?: string;
   color: string;
@@ -37,6 +46,14 @@ export type Product = {
   details: Array<{ label: string; value: string }>;
   sourceName: string;
   sourceUrl: string;
+  moderationStatus: ModerationStatus;
+  moderationNote?: string;
+  verificationStatus: VerificationStatus;
+  verificationNote?: string;
+  createdAt?: string;
+  soldAt?: string;
+  soldToProfileId?: string;
+  archivePieceId?: number;
 };
 
 export type BrandDirectoryEntry = {
@@ -46,11 +63,52 @@ export type BrandDirectoryEntry = {
   description: string;
 };
 
+export type ArchiveSeasonKind = "SS" | "FW" | "PRE" | "CRUISE" | "UNKNOWN";
+
+export type ArchivePiece = {
+  id: number;
+  brandId: number;
+  brandSlug: string;
+  brand: string;
+  slug: string;
+  title: string;
+  seasonKind: ArchiveSeasonKind;
+  seasonYear?: number;
+  seasonLabel: string;
+  collection?: string;
+  category?: string;
+  color?: string;
+  coverImageUrl?: string;
+  description: string[];
+  details: Array<{ label: string; value: string }>;
+  listingCount: number;
+};
+
+export type ArchiveSeasonFilter = {
+  key: string;
+  label: string;
+  count: number;
+  seasonKind: ArchiveSeasonKind;
+  seasonYear?: number;
+};
+
+export type ArchiveBrandEntry = {
+  brand: BrandDirectoryEntry;
+  pieceCount: number;
+  yearMin: number | null;
+  yearMax: number | null;
+  seasons: ArchiveSeasonFilter[];
+};
+
 export type ConversationMessage = {
   id: number;
   sender: "me" | "other";
   text: string;
   timestamp: string;
+  product?: {
+    id: number;
+    imageUrl: string;
+  };
 };
 
 export type Conversation = {
@@ -98,4 +156,46 @@ export type Viewer = {
   initials: string;
   avatarSeed: string;
   name: string;
+  isAdmin: boolean;
+  points?: number;
+};
+
+export type PurchaseOrderStatus =
+  | "pending_checkout"
+  | "awaiting_label"
+  | "label_submitted"
+  | "paid"
+  | "failed"
+  | "canceled"
+  | "refunded";
+
+export type PurchaseOrder = {
+  id: string;
+  productId: number;
+  buyerProfileId: string;
+  sellerProfileId: string;
+  status: PurchaseOrderStatus;
+  amount: number;
+  currency: string;
+  platformFee: number;
+  checkoutSessionId?: string;
+  paymentIntentId?: string;
+  labelDueAt?: string;
+  shippingLabelUrl?: string;
+  shippingLabelUploadedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NotificationType = "sale_created" | "label_submitted";
+
+export type Notification = {
+  id: string;
+  profileId: string;
+  type: NotificationType;
+  purchaseOrderId?: string;
+  productId?: number;
+  message: string;
+  readAt?: string;
+  createdAt: string;
 };

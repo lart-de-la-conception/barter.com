@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 230">
+  <text
+    x="460" y="128"
+    text-anchor="middle"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="118"
+    font-weight="700"
+    fill="#18140e"
+  >Maison Margiela</text>
+  <text
+    x="460" y="200"
+    text-anchor="middle"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="42"
+    letter-spacing="16"
+    fill="#18140e"
+  >PARIS</text>
+</svg>

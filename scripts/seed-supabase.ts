@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import {
+  brandDirectory,
   conversations,
   currentUserId,
   favoriteProductIds,
@@ -96,29 +97,148 @@ async function main() {
     throw profilesError;
   }
 
-  const { error: productsError } = await supabase.from("products").upsert(
-    products.map((product) => ({
-      id: product.id,
-      slug: product.slug,
+  const { error: brandsError } = await supabase.from("brands").upsert(
+    brandDirectory.map((brand) => ({
+      slug: brand.slug,
+      name: brand.name,
+      tagline: brand.tagline,
+      description: brand.description,
+      is_active: true,
+    })),
+    { onConflict: "slug" },
+  );
+  if (brandsError) {
+    throw brandsError;
+  }
+
+  const { data: brandRows, error: brandRowsError } = await supabase.from("brands").select("id,slug");
+  if (brandRowsError) {
+    throw brandRowsError;
+  }
+
+  const brandIdBySlug = new Map((brandRows ?? []).map((row) => [String(row.slug), Number(row.id)]));
+
+  function normalizePieceTitle(title: string) {
+    return title.trim().toLowerCase();
+  }
+
+  function pieceSlugFromTitle(title: string) {
+    return normalizePieceTitle(title)
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "piece";
+  }
+
+  type SeedPiece = {
+    brand: string;
+    brandSlug: string;
+    brandId: number;
+    slug: string;
+    title: string;
+    category: string;
+    color: string;
+    description: string[];
+    details: Array<{ label: string; value: string }>;
+    coverImageUrl: string | null;
+  };
+
+  const pieceByKey = new Map<string, SeedPiece>();
+  for (const product of products) {
+    const brandSlug = slugifyBrand(product.brand);
+    const brandId = brandIdBySlug.get(brandSlug);
+    if (!brandId) continue;
+
+    const slug = pieceSlugFromTitle(product.title);
+    const key = `${brandId}:${slug}`;
+    if (pieceByKey.has(key)) continue;
+
+    const firstImage = productImages
+      .filter((image) => image.productId === product.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder)[0];
+
+    pieceByKey.set(key, {
       brand: product.brand,
-      brand_slug: slugifyBrand(product.brand),
+      brandSlug,
+      brandId,
+      slug,
       title: product.title,
-      subtitle: product.subtitle,
       category: product.category,
-      size: product.size,
-      condition: product.condition,
-      location: product.location,
-      price: product.price,
-      original_price: product.originalPrice ?? null,
-      seller_profile_id: profileIdBySlug.get(product.sellerId),
-      listing_time: product.listingTime,
-      badge: product.badge ?? null,
       color: product.color,
       description: product.description,
-      detail_items: product.details,
-      source_name: product.sourceName,
-      source_url: product.sourceUrl,
+      details: product.details,
+      coverImageUrl: firstImage?.publicUrl ?? null,
+    });
+  }
+
+  const { error: archivePiecesError } = await supabase.from("brand_archive_pieces").upsert(
+    Array.from(pieceByKey.values()).map((piece) => ({
+      brand_id: piece.brandId,
+      brand_slug: piece.brandSlug,
+      slug: piece.slug,
+      title: piece.title,
+      season_kind: "UNKNOWN" as const,
+      season_year: null,
+      season_label: "Unknown",
+      category: piece.category,
+      color: piece.color,
+      cover_image_url: piece.coverImageUrl,
+      description: piece.description,
+      details: piece.details,
     })),
+    { onConflict: "brand_id,slug" },
+  );
+
+  if (archivePiecesError) {
+    throw archivePiecesError;
+  }
+
+  const { data: archivePieceRows, error: archivePieceRowsError } = await supabase
+    .from("brand_archive_pieces")
+    .select("id,brand_id,slug");
+
+  if (archivePieceRowsError) {
+    throw archivePieceRowsError;
+  }
+
+  const archivePieceIdByKey = new Map(
+    (archivePieceRows ?? []).map((row) => [`${Number(row.brand_id)}:${String(row.slug)}`, Number(row.id)]),
+  );
+
+  const { error: productsError } = await supabase.from("products").upsert(
+    products.map((product) => {
+      const brandSlug = slugifyBrand(product.brand);
+      const brandId = brandIdBySlug.get(brandSlug) ?? null;
+      const archivePieceId =
+        brandId !== null
+          ? archivePieceIdByKey.get(`${brandId}:${pieceSlugFromTitle(product.title)}`) ?? null
+          : null;
+
+      return {
+        id: product.id,
+        slug: product.slug,
+        brand_id: brandId,
+        brand: product.brand,
+        brand_slug: brandSlug,
+        title: product.title,
+        subtitle: product.subtitle,
+        category: product.category,
+        size: product.size,
+        condition: product.condition,
+        location: product.location,
+        price: product.price,
+        original_price: product.originalPrice ?? null,
+        seller_profile_id: profileIdBySlug.get(product.sellerId),
+        listing_time: product.listingTime,
+        badge: product.badge ?? null,
+        color: product.color,
+        description: product.description,
+        detail_items: product.details,
+        source_name: product.sourceName,
+        source_url: product.sourceUrl,
+        moderation_status: "approved",
+        verification_status: "verified",
+        archive_piece_id: archivePieceId,
+      };
+    }),
     { onConflict: "id" },
   );
 
@@ -178,6 +298,14 @@ async function main() {
     throw conversationsError;
   }
 
+  const { error: syncConversationsError } = await supabase.rpc("sync_conversations_id_sequence");
+  if (syncConversationsError) {
+    throw new Error(
+      `Conversations seeded but sync_conversations_id_sequence failed (${syncConversationsError.message}). ` +
+        "Apply the latest supabase/schema.sql (function sync_conversations_id_sequence) to your project, then re-run the seed.",
+    );
+  }
+
   await supabase.from("conversation_participants").delete().in("conversation_id", conversations.map((conversation) => conversation.id));
   const { error: participantError } = await supabase.from("conversation_participants").insert(
     conversations.flatMap((conversation) => [
@@ -204,6 +332,8 @@ async function main() {
         sender_profile_id: message.sender === "me" ? currentProfileId : profileIdBySlug.get(conversation.userId),
         body: message.text,
         display_timestamp: message.timestamp,
+        product_id: null,
+        product_image_url: null,
       })),
     ),
   );

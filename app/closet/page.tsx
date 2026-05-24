@@ -8,12 +8,24 @@ export default async function ClosetRoute({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const tab = (await searchParams).tab;
-  const initialTab = tab === "history" ? "history" : "all";
-  const { currentUser, closetItems, trades } = await getClosetPageData();
+  const initialTab =
+    tab === "history" || tab === "purchases" || tab === "sales" ? (tab as "history" | "purchases" | "sales") : "all";
+  const { currentUser, closetItems, trades, purchases, purchaseOrders, salesOrders, notifications } = await getClosetPageData();
 
   if (!currentUser) {
     redirect("/");
   }
 
-  return <MyClosetPage currentUser={currentUser} closetItems={closetItems} trades={trades} initialTab={initialTab} />;
+  return (
+    <MyClosetPage
+      currentUser={currentUser}
+      closetItems={closetItems}
+      trades={trades}
+      purchases={purchases}
+      purchaseOrders={purchaseOrders}
+      salesOrders={salesOrders}
+      notifications={notifications}
+      initialTab={initialTab}
+    />
+  );
 }
