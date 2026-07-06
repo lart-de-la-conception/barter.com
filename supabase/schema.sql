@@ -213,7 +213,17 @@ select
     order by pi.sort_order asc, p2.id asc
     limit 1
   ),
-  coalesce(gp.description, '{}'),
+  coalesce(
+    (
+      select p3.description
+      from public.products p3
+      where lower(btrim(p3.title)) = gp.normalized_title
+        and p3.brand_id = gp.brand_id
+      order by p3.id asc
+      limit 1
+    ),
+    '{}'::text[]
+  ),
   coalesce(gp.detail_items, '[]'::jsonb)
 from grouped_products gp
 on conflict (brand_id, slug) do nothing;
