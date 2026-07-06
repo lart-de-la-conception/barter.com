@@ -250,6 +250,21 @@ function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
+  // Escape-to-close and body scroll lock while the modal is open.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
@@ -262,6 +277,8 @@ function Modal({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
