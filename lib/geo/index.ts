@@ -10,6 +10,9 @@ export const geoProvider = mapboxProvider;
 const EARTH_RADIUS_KM = 6371;
 // Public, camera-covered, foot-traffic-heavy spots make the best neutral exchange points.
 const SUGGESTION_CATEGORIES = ["coffee", "shopping_mall", "library", "restaurant"];
+// A curated safe zone is only worth suggesting if it's actually near the midpoint.
+// Beyond this, it's not a viable in-person meetup and shouldn't outrank nearby venues.
+const MAX_SAFE_ZONE_DISTANCE_KM = 50;
 
 function toRadians(value: number): number {
   return (value * Math.PI) / 180;
@@ -90,6 +93,7 @@ export async function suggestMeetupSpots(
       isSafeZone: true,
       distanceFromMidpointKm: haversineKm(midpoint, zone),
     }))
+    .filter((zone) => (zone.distanceFromMidpointKm ?? Infinity) <= MAX_SAFE_ZONE_DISTANCE_KM)
     .sort((x, y) => (x.distanceFromMidpointKm ?? 0) - (y.distanceFromMidpointKm ?? 0))
     .slice(0, 3);
 

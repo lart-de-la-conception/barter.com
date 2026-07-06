@@ -1062,6 +1062,8 @@ export function HomePage({
 
   const startTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
+    // No rotation for 0 or 1 slides — `% 0` would be NaN and a lone slide needn't cycle.
+    if (heroSlides.length <= 1) return;
     timerRef.current = setInterval(() => {
       setCurrentSlide((s) => (s + 1) % heroSlides.length);
     }, 3200);
@@ -2985,6 +2987,11 @@ export function BrandArchivePage({
   );
 }
 
+function yearFromSeasonKey(key?: string): number | null {
+  const match = key?.match(/(\d{4})/);
+  return match ? Number(match[1]) : null;
+}
+
 function BrandArchiveGrid({
   brand,
   pieces,
@@ -2997,9 +3004,20 @@ function BrandArchiveGrid({
   activeSeasonKey?: string;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedYear, setSelectedYear] = useState<number | null>(null);
+  const [selectedYear, setSelectedYear] = useState<number | null>(() => yearFromSeasonKey(activeSeasonKey));
   const [activeSeason, setActiveSeason] = useState<string | null>(activeSeasonKey ?? null);
   const [sortByCollection, setSortByCollection] = useState(false);
+
+  // Re-sync when navigation swaps the season prop on an already-mounted grid
+  // (Next keeps the component mounted across ?season= changes, so a once-only
+  // initializer would keep the old season). Deriving the year also reveals the
+  // season panel instead of applying a filter the user can't see.
+  const [prevSeasonKey, setPrevSeasonKey] = useState(activeSeasonKey);
+  if (activeSeasonKey !== prevSeasonKey) {
+    setPrevSeasonKey(activeSeasonKey);
+    setActiveSeason(activeSeasonKey ?? null);
+    setSelectedYear(yearFromSeasonKey(activeSeasonKey));
+  }
 
   // Unique years from season data, newest first
   const years = useMemo(() => {
@@ -4289,6 +4307,13 @@ export function MyClosetPage({
   const [viewMode, setViewMode] = useState<"grid" | "compact">("grid");
   const [addOpen, setAddOpen] = useState(false);
   const [uploads, setUploads] = useState<UploadedImage[]>([]);
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
+  // Revoke any outstanding preview object URLs when the closet unmounts so they
+  // don't leak for the rest of the session.
+  useEffect(() => () => {
+    uploadsRef.current.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
+  }, []);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
   const [onboardingPayouts, setOnboardingPayouts] = useState(false);
@@ -4365,11 +4390,16 @@ export function MyClosetPage({
   function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files) return;
-    const nextUploads = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setUploads((current) => [...current, ...nextUploads].slice(0, 8));
+    setUploads((current) => {
+      // Only create object URLs for files that fit the 8-image cap, otherwise
+      // the overflow entries' URLs would be created and immediately dropped
+      // (leaked) by the slice.
+      const availableSlots = Math.max(0, 8 - current.length);
+      const nextUploads = Array.from(files)
+        .slice(0, availableSlots)
+        .map((file) => ({ file, previewUrl: URL.createObjectURL(file) }));
+      return [...current, ...nextUploads];
+    });
   }
 
   async function saveDraftItem() {
@@ -4431,6 +4461,7 @@ export function MyClosetPage({
         price: "",
         description: "",
       });
+      uploads.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
       setUploads([]);
       setAddOpen(false);
       setActiveTab("all");
@@ -6143,6 +6174,8 @@ export function RewardsPage({ user }: { user: UserProfile }) {
   const [balance, setBalance] = useState(user.points ?? 0);
   const [redeemed, setRedeemed] = useState<Set<string>>(new Set());
   const [justRedeemed, setJustRedeemed] = useState<string | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flashTimerRef.current) clearTimeout(flashTimerRef.current); }, []);
   const tier = getTier(balance);
 
   function redeem(benefit: RewardBenefit) {
@@ -6150,7 +6183,8 @@ export function RewardsPage({ user }: { user: UserProfile }) {
     setBalance((b) => b - benefit.cost);
     setRedeemed((s) => new Set([...s, benefit.id]));
     setJustRedeemed(benefit.id);
-    setTimeout(() => setJustRedeemed(null), 2000);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setJustRedeemed(null), 2000);
   }
 
   return (

@@ -1626,7 +1626,10 @@ export async function getTradeDetailData(tradeId: number): Promise<TradeDetailDa
     counterpart,
     productsById,
     viewerLocation,
-    counterpartLocation,
+    // Never ship the counterpart's raw coordinates to the client — the UI only
+    // needs to know whether they have a location set. The meetup midpoint and
+    // suggestions are already computed server-side above.
+    counterpartLocation: { ...counterpartLocation, coordinates: null },
     suggestions,
     midpoint,
     mapboxConfigured: isMapboxConfigured(),
