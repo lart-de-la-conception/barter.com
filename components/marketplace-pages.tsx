@@ -250,6 +250,21 @@ function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
+  // Escape-to-close and body scroll lock while the modal is open.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
@@ -262,6 +277,8 @@ function Modal({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
         className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
@@ -606,6 +623,9 @@ function VoteButtons({ productId }: { productId: number }) {
 
   function handleVote(direction: "up" | "down", event: React.MouseEvent) {
     event.preventDefault();
+    // Stop the click from bubbling to the ProductCard wrapper, which would
+    // navigate to the product page and discard the vote.
+    event.stopPropagation();
     setVote((current) => (current === direction ? null : direction));
   }
 
@@ -1059,6 +1079,8 @@ export function HomePage({
 
   const startTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
+    // No rotation for 0 or 1 slides — `% 0` would be NaN and a lone slide needn't cycle.
+    if (heroSlides.length <= 1) return;
     timerRef.current = setInterval(() => {
       setCurrentSlide((s) => (s + 1) % heroSlides.length);
     }, 3200);
@@ -2050,7 +2072,7 @@ export function ProductsPage({
           {hasActiveFilters ? (
             <button
               type="button"
-              onClick={() => updateFilters({ q: null, verified: null, tradeReady: null, size: null, sort: null, page: null })}
+              onClick={clearAllFilters}
               className="mt-6 rounded-full bg-black px-5 py-3 text-sm font-semibold text-white transition hover:bg-neutral-800"
             >
               Reset filters
@@ -2982,6 +3004,11 @@ export function BrandArchivePage({
   );
 }
 
+function yearFromSeasonKey(key?: string): number | null {
+  const match = key?.match(/(\d{4})/);
+  return match ? Number(match[1]) : null;
+}
+
 function BrandArchiveGrid({
   brand,
   pieces,
@@ -2994,9 +3021,20 @@ function BrandArchiveGrid({
   activeSeasonKey?: string;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedYear, setSelectedYear] = useState<number | null>(null);
+  const [selectedYear, setSelectedYear] = useState<number | null>(() => yearFromSeasonKey(activeSeasonKey));
   const [activeSeason, setActiveSeason] = useState<string | null>(activeSeasonKey ?? null);
   const [sortByCollection, setSortByCollection] = useState(false);
+
+  // Re-sync when navigation swaps the season prop on an already-mounted grid
+  // (Next keeps the component mounted across ?season= changes, so a once-only
+  // initializer would keep the old season). Deriving the year also reveals the
+  // season panel instead of applying a filter the user can't see.
+  const [prevSeasonKey, setPrevSeasonKey] = useState(activeSeasonKey);
+  if (activeSeasonKey !== prevSeasonKey) {
+    setPrevSeasonKey(activeSeasonKey);
+    setActiveSeason(activeSeasonKey ?? null);
+    setSelectedYear(yearFromSeasonKey(activeSeasonKey));
+  }
 
   // Unique years from season data, newest first
   const years = useMemo(() => {
@@ -3882,22 +3920,30 @@ export function ProductDetailPage({
                 Buy Now
               </button>
             ) : null}
-            <button
-              type="button"
-              onClick={handleTradeClick}
-              disabled={isSold}
-              className="rounded-full bg-black px-6 py-4 text-center text-sm font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-300"
-            >
-              Propose Trade
-            </button>
-            <button
-              type="button"
-              onClick={handleMessageClick}
-              disabled={viewer ? !seller : false}
-              className="rounded-full border border-black px-6 py-4 text-center text-sm font-semibold text-black transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:border-black/10 disabled:text-neutral-400"
-            >
-              Message Seller
-            </button>
+            {!isOwnListing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleTradeClick}
+                  disabled={isSold}
+                  className="rounded-full bg-black px-6 py-4 text-center text-sm font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-300"
+                >
+                  Propose Trade
+                </button>
+                <button
+                  type="button"
+                  onClick={handleMessageClick}
+                  disabled={viewer ? !seller : false}
+                  className="rounded-full border border-black px-6 py-4 text-center text-sm font-semibold text-black transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:border-black/10 disabled:text-neutral-400"
+                >
+                  Message Seller
+                </button>
+              </>
+            ) : (
+              <p className="rounded-full border border-black/10 px-6 py-4 text-center text-sm font-medium text-neutral-500">
+                This is your listing. Manage it from your closet.
+              </p>
+            )}
           </div>
           <div className="grid gap-3 rounded-[28px] border border-black/10 bg-neutral-50 p-5 text-sm text-neutral-600">
             {[
@@ -4278,6 +4324,13 @@ export function MyClosetPage({
   const [viewMode, setViewMode] = useState<"grid" | "compact">("grid");
   const [addOpen, setAddOpen] = useState(false);
   const [uploads, setUploads] = useState<UploadedImage[]>([]);
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
+  // Revoke any outstanding preview object URLs when the closet unmounts so they
+  // don't leak for the rest of the session.
+  useEffect(() => () => {
+    uploadsRef.current.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
+  }, []);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
   const [onboardingPayouts, setOnboardingPayouts] = useState(false);
@@ -4308,7 +4361,7 @@ export function MyClosetPage({
     () => new Set(trades.filter((trade) => trade.status === "pending").flatMap((trade) => trade.yourItemIds)),
     [trades],
   );
-  const historyTrades = useMemo(() => trades.filter((trade) => trade.status === "accepted"), [trades]);
+  const historyTrades = useMemo(() => trades.filter((trade) => trade.status === "completed"), [trades]);
   const purchaseItems = purchases;
   const payoutsReady = currentUser.stripeChargesEnabled === true && currentUser.stripePayoutsEnabled === true;
   const shouldPromptPayouts =
@@ -4354,11 +4407,16 @@ export function MyClosetPage({
   function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files) return;
-    const nextUploads = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setUploads((current) => [...current, ...nextUploads].slice(0, 8));
+    setUploads((current) => {
+      // Only create object URLs for files that fit the 8-image cap, otherwise
+      // the overflow entries' URLs would be created and immediately dropped
+      // (leaked) by the slice.
+      const availableSlots = Math.max(0, 8 - current.length);
+      const nextUploads = Array.from(files)
+        .slice(0, availableSlots)
+        .map((file) => ({ file, previewUrl: URL.createObjectURL(file) }));
+      return [...current, ...nextUploads];
+    });
   }
 
   async function saveDraftItem() {
@@ -4420,6 +4478,7 @@ export function MyClosetPage({
         price: "",
         description: "",
       });
+      uploads.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
       setUploads([]);
       setAddOpen(false);
       setActiveTab("all");
@@ -5266,8 +5325,14 @@ export function TradesPage({
   const [filter, setFilter] = useState<"all" | "pending" | "accepted" | "declined">(initialFilter);
   const [tradeStatusOverrides, setTradeStatusOverrides] = useState<Record<number, TradeProposal["status"]>>({});
   const [tradeActionError, setTradeActionError] = useState<string | null>(null);
+  const [pendingTradeId, setPendingTradeId] = useState<number | null>(null);
 
   async function updateTradeStatus(tradeId: number, status: "accepted" | "declined") {
+    // Guard against concurrent mutations: a double-click on Accept, or Accept then
+    // Decline in quick succession, would otherwise fire racing PATCHes whose
+    // responses could land out of order and leave the UI disagreeing with the DB.
+    if (pendingTradeId !== null || tradeStatusOverrides[tradeId]) return;
+    setPendingTradeId(tradeId);
     setTradeActionError(null);
     try {
       const response = await fetch(`/api/trades/${tradeId}`, {
@@ -5281,6 +5346,8 @@ export function TradesPage({
       router.refresh();
     } catch (error) {
       setTradeActionError(error instanceof Error ? error.message : "Unable to update trade.");
+    } finally {
+      setPendingTradeId(null);
     }
   }
 
@@ -5519,7 +5586,7 @@ function TradeCard({
           <div>
             <p className="font-semibold text-black">{user?.name ?? "Barter Member"}</p>
             <p className="text-xs text-neutral-500">
-              {user?.handle ? `@${user.handle} · ` : ""}{trade.timestamp}
+              {user?.handle ? `${user.handle} · ` : ""}{trade.timestamp}
             </p>
           </div>
         </div>
@@ -5534,12 +5601,15 @@ function TradeCard({
             "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold",
             isPending && isReceived  ? "bg-amber-100 text-amber-900" :
             isPending                ? "bg-neutral-100 text-neutral-600" :
-            trade.status === "accepted" ? "bg-emerald-100 text-emerald-800" :
-                                         "bg-rose-100 text-rose-800",
+            trade.status === "accepted"  ? "bg-emerald-100 text-emerald-800" :
+            trade.status === "scheduled" ? "bg-indigo-100 text-indigo-800" :
+            trade.status === "completed" ? "bg-emerald-100 text-emerald-800" :
+                                           "bg-rose-100 text-rose-800",
           )}>
             {isPending     ? <Clock3     className="h-3 w-3" /> : null}
-            {trade.status === "accepted" ? <CheckCircle2 className="h-3 w-3" /> : null}
-            {trade.status === "declined" ? <XCircle      className="h-3 w-3" /> : null}
+            {trade.status === "accepted" || trade.status === "completed" ? <CheckCircle2 className="h-3 w-3" /> : null}
+            {trade.status === "scheduled" ? <MapPin className="h-3 w-3" /> : null}
+            {trade.status === "declined" || trade.status === "canceled" ? <XCircle className="h-3 w-3" /> : null}
             <span className="capitalize">{trade.status}</span>
           </span>
         </div>
@@ -5617,14 +5687,30 @@ function TradeCard({
 
         {/* Resolved state footer */}
         {!compact && !isPending ? (
-          <div className={cn(
-            "mt-5 flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-medium",
-            trade.status === "accepted" ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-800",
-          )}>
-            {trade.status === "accepted"
-              ? <><CheckCircle2 className="h-4 w-4 shrink-0" /> This trade was accepted</>
-              : <><XCircle className="h-4 w-4 shrink-0" /> This trade was declined</>}
-          </div>
+          trade.status === "accepted" || trade.status === "scheduled" ? (
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/8 bg-neutral-50 px-4 py-3">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-neutral-700">
+                <MapPin className="h-4 w-4 shrink-0 text-neutral-500" />
+                {trade.status === "scheduled" ? "Meetup scheduled" : "Accepted — set up your meetup"}
+              </span>
+              <Link
+                href={`/trades/${trade.id}`}
+                className="inline-flex items-center gap-1.5 rounded-full bg-black px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-neutral-800"
+              >
+                {trade.status === "scheduled" ? "View meetup" : "Arrange meetup"}
+                <ChevronRight className="h-4 w-4" />
+              </Link>
+            </div>
+          ) : (
+            <div className={cn(
+              "mt-5 flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-medium",
+              trade.status === "completed" ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-800",
+            )}>
+              {trade.status === "completed"
+                ? <><CheckCircle2 className="h-4 w-4 shrink-0" /> This trade is complete</>
+                : <><XCircle className="h-4 w-4 shrink-0" /> This trade was {trade.status}</>}
+            </div>
+          )
         ) : null}
       </div>
     </div>
@@ -5695,7 +5781,7 @@ export function TradeHistoryPage({
   usersById: Record<string, UserProfile | undefined>;
   productsById: Record<number, Product | undefined>;
 }) {
-  const completedTrades = trades.filter((t) => t.status === "accepted");
+  const completedTrades = trades.filter((t) => t.status === "completed");
 
   const totalValue = completedTrades.reduce((sum, trade) => {
     const yourValue = trade.yourItemIds.reduce((s, id) => s + (productsById[id]?.price ?? 0), 0);
@@ -5777,7 +5863,7 @@ export function TradeHistoryPage({
                       )}
                       <div>
                         <p className="font-semibold text-black">{partner?.name ?? "Barter Member"}</p>
-                        <p className="text-xs text-neutral-500">{partner?.handle ? `@${partner.handle}` : ""}</p>
+                        <p className="text-xs text-neutral-500">{partner?.handle ?? ""}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
@@ -6105,6 +6191,8 @@ export function RewardsPage({ user }: { user: UserProfile }) {
   const [balance, setBalance] = useState(user.points ?? 0);
   const [redeemed, setRedeemed] = useState<Set<string>>(new Set());
   const [justRedeemed, setJustRedeemed] = useState<string | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flashTimerRef.current) clearTimeout(flashTimerRef.current); }, []);
   const tier = getTier(balance);
 
   function redeem(benefit: RewardBenefit) {
@@ -6112,7 +6200,8 @@ export function RewardsPage({ user }: { user: UserProfile }) {
     setBalance((b) => b - benefit.cost);
     setRedeemed((s) => new Set([...s, benefit.id]));
     setJustRedeemed(benefit.id);
-    setTimeout(() => setJustRedeemed(null), 2000);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setJustRedeemed(null), 2000);
   }
 
   return (

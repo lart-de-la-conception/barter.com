@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { serverErrorResponse } from "@/lib/api-error";
+import { safeHttpUrl } from "@/lib/sanitize";
 
 export async function POST(request: Request) {
   const profile = await ensureProfileForAuthenticatedUser();
@@ -15,7 +17,7 @@ export async function POST(request: Request) {
   const conversationId = Number(payload?.conversationId);
   const body = String(payload?.body ?? "").trim();
   const productId = payload?.productId !== undefined ? Number(payload.productId) : null;
-  const productImageUrl = typeof payload?.productImageUrl === "string" ? payload.productImageUrl.trim() : null;
+  const productImageUrl = safeHttpUrl(payload?.productImageUrl);
 
   if (!Number.isInteger(conversationId) || conversationId <= 0) {
     return NextResponse.json({ error: "A valid conversation is required." }, { status: 400 });
@@ -36,7 +38,7 @@ export async function POST(request: Request) {
   });
 
   if (messageError) {
-    return NextResponse.json({ error: messageError.message }, { status: 500 });
+    return serverErrorResponse("messages.insert", messageError, "Unable to send message.");
   }
 
   const { error: conversationError } = await supabase
@@ -48,7 +50,7 @@ export async function POST(request: Request) {
     .eq("id", conversationId);
 
   if (conversationError) {
-    return NextResponse.json({ error: conversationError.message }, { status: 500 });
+    return serverErrorResponse("messages.conversationUpdate", conversationError, "Unable to send message.");
   }
 
   return NextResponse.json({ ok: true });

@@ -5,7 +5,7 @@ export default async function TradeHistoryRoute() {
   await requireViewer("/trades/history");
 
   const { trades } = await getTradesPageData();
-  const completed = trades.filter((t) => t.status === "accepted");
+  const completed = trades.filter((t) => t.status === "completed");
 
   const [users, products] = await Promise.all([
     getProfilesBySlugs(completed.map((t) => t.userId)),

@@ -27,30 +27,58 @@ export async function ensureProfileForAuthenticatedUser() {
   }
 
   const email = user.email.toLowerCase();
-  const existingResponse = await supabase
+
+  // Authoritative lookup: a profile is "mine" only if it is bound to my auth id.
+  // (Separate `.eq()` queries rather than interpolating into `.or()`, which would
+  // be vulnerable to PostgREST filter injection via a crafted email local-part.)
+  const ownResponse = await supabase
     .from("profiles")
     .select("*")
-    .or(`auth_user_id.eq.${user.id},email.eq.${email}`)
+    .eq("auth_user_id", user.id)
     .limit(1)
     .maybeSingle();
 
-  if (existingResponse.error) {
-    throw existingResponse.error;
+  if (ownResponse.error) {
+    throw ownResponse.error;
   }
 
-  if (existingResponse.data) {
-    if (existingResponse.data.auth_user_id !== user.id) {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ auth_user_id: user.id })
-        .eq("id", existingResponse.data.id);
+  if (ownResponse.data) {
+    return ownResponse.data;
+  }
 
-      if (error) {
-        throw error;
-      }
+  // No profile bound to this auth user yet. Adopt an UNCLAIMED profile with this
+  // email (e.g. a seeded/imported member onboarding for the first time) — but
+  // never one already bound to a different auth user, which would be an account
+  // takeover. The `.is("auth_user_id", null)` guard on the update also makes the
+  // claim atomic against a concurrent claim.
+  const claimableResponse = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("email", email)
+    .is("auth_user_id", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (claimableResponse.error) {
+    throw claimableResponse.error;
+  }
+
+  if (claimableResponse.data) {
+    const { data: linked, error } = await supabase
+      .from("profiles")
+      .update({ auth_user_id: user.id })
+      .eq("id", claimableResponse.data.id)
+      .is("auth_user_id", null)
+      .select("*")
+      .maybeSingle();
+
+    if (error) {
+      throw error;
     }
 
-    return existingResponse.data;
+    if (linked) {
+      return linked;
+    }
   }
 
   const localPart = email.split("@")[0] ?? "member";

@@ -13,7 +13,7 @@ export default async function ClosetRoute({
   const { currentUser, closetItems, trades, purchases, purchaseOrders, salesOrders, notifications } = await getClosetPageData();
 
   if (!currentUser) {
-    redirect("/");
+    redirect("/login?next=/closet");
   }
 
   return (

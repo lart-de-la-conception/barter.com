@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { serverErrorResponse } from "@/lib/api-error";
 
 export async function POST(request: Request) {
   const profile = await ensureProfileForAuthenticatedUser();
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
     : { data: [], error: null };
 
   if (itemError) {
-    return NextResponse.json({ error: itemError.message }, { status: 400 });
+    return serverErrorResponse("trades.itemLookup", itemError, "Unable to send offer.");
   }
 
   if ((initiatorItems ?? []).length !== yourItemIds.length) {
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
     .single();
 
   if (tradeError || !trade) {
-    return NextResponse.json({ error: tradeError?.message ?? "Unable to create trade." }, { status: 500 });
+    return serverErrorResponse("trades.insert", tradeError, "Unable to create trade.");
   }
 
   const { error: tradeItemsError } = await supabase.from("trade_items").insert([
@@ -93,7 +94,7 @@ export async function POST(request: Request) {
 
   if (tradeItemsError) {
     await supabase.from("trades").delete().eq("id", trade.id);
-    return NextResponse.json({ error: tradeItemsError.message }, { status: 500 });
+    return serverErrorResponse("trades.itemsInsert", tradeItemsError, "Unable to create trade.");
   }
 
   return NextResponse.json({ ok: true, tradeId: trade.id });
