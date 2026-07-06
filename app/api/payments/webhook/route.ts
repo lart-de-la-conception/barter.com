@@ -13,6 +13,9 @@ async function markOrderPaidByCheckoutSession(session: Stripe.Checkout.Session) 
 
   const supabase = createSupabaseAdminClient();
   const nowIso = new Date().toISOString();
+  // Idempotency: only the first delivery (order still awaiting checkout) does the
+  // work. Stripe can deliver an event more than once; without the status guard a
+  // replay would reset the 12h label deadline and re-fire the seller notification.
   const { data: updatedOrder, error: orderError } = await supabase
     .from("purchase_orders")
     .update({
@@ -23,6 +26,7 @@ async function markOrderPaidByCheckoutSession(session: Stripe.Checkout.Session) 
       updated_at: nowIso,
     })
     .eq("id", orderId)
+    .eq("status", "pending_checkout")
     .select("id, product_id, buyer_profile_id, seller_profile_id")
     .maybeSingle();
 

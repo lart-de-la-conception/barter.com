@@ -56,15 +56,21 @@ export function FavoritesProvider({
   const pathname = usePathname();
   const useLocalFavorites = !isSupabaseConfigured() || isDevelopmentAuthBypassEnabled();
   const useServerFavorites = isSupabaseConfigured() && !isDevelopmentAuthBypassEnabled() && Boolean(viewer);
+  // Initialize deterministically (no localStorage read during render) so the
+  // server-rendered HTML and the client's first render agree. Locally-stored
+  // favorites are loaded after mount in the effect below.
   const [favoriteIds, setFavoriteIds] = useState<number[]>(() =>
-    useServerFavorites ? initialFavoriteIds : useLocalFavorites ? readLocalFavorites() : [],
+    useServerFavorites ? initialFavoriteIds : [],
   );
 
+  // Hydrate from localStorage after mount to avoid an SSR/client mismatch.
   useEffect(() => {
-    if (useLocalFavorites) {
-      window.localStorage.setItem(storageKey, JSON.stringify(favoriteIds));
-    }
-  }, [favoriteIds, useLocalFavorites]);
+    if (!useLocalFavorites) return;
+    const id = window.setTimeout(() => {
+      setFavoriteIds(readLocalFavorites());
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [useLocalFavorites]);
 
   const value = useMemo<FavoritesContextValue>(
     () => ({
@@ -73,11 +79,17 @@ export function FavoritesProvider({
       toggleFavorite: async (productId) => {
         if (!viewer) {
           if (useLocalFavorites) {
-            setFavoriteIds((current) =>
-              current.includes(productId)
+            setFavoriteIds((current) => {
+              const next = current.includes(productId)
                 ? current.filter((id) => id !== productId)
-                : [...current, productId],
-            );
+                : [...current, productId];
+              try {
+                window.localStorage.setItem(storageKey, JSON.stringify(next));
+              } catch {
+                // Ignore quota/availability errors; favorites stay in memory.
+              }
+              return next;
+            });
             return;
           }
 

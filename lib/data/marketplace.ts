@@ -30,12 +30,22 @@ import type {
   HeroSlide,
   MarketplaceStats,
   Notification,
+  NotificationType,
   Product,
   PurchaseOrder,
+  TradeMeetup,
   TradeProposal,
+  TradeStatus,
   UserProfile,
   Viewer,
 } from "@/lib/marketplace-types";
+import {
+  isMapboxConfigured,
+  suggestMeetupSpots,
+  type Coordinates,
+  type PlaceSuggestion,
+  type SafeZoneInput,
+} from "@/lib/geo";
 import { isDevelopmentAuthBypassEnabled, isSupabaseConfigured } from "@/lib/supabase/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -146,17 +156,34 @@ type TradeRow = {
   id: number;
   initiator_profile_id: string;
   recipient_profile_id: string;
-  status: "pending" | "accepted" | "declined";
+  status: TradeStatus;
   message: string;
   display_timestamp: string;
   initiator_cash: number | null;
   recipient_cash: number | null;
+  completed_at: string | null;
 };
 
 type TradeItemRow = {
   trade_id: number;
   product_id: number;
   side: "initiator" | "recipient";
+};
+
+type TradeMeetupRow = {
+  id: number;
+  trade_id: number;
+  status: "proposed" | "agreed" | "completed" | "canceled";
+  place_name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  place_source: "auto_suggested" | "curated_safe_zone" | "manual";
+  mapbox_place_id: string | null;
+  scheduled_for: string | null;
+  proposed_by_profile_id: string;
+  initiator_confirmed_at: string | null;
+  recipient_confirmed_at: string | null;
 };
 
 type PurchaseOrderRow = {
@@ -180,9 +207,10 @@ type PurchaseOrderRow = {
 type NotificationRow = {
   id: string;
   profile_id: string;
-  type: "sale_created" | "label_submitted";
+  type: NotificationType;
   purchase_order_id: string | null;
   product_id: number | null;
+  trade_id: number | null;
   message: string;
   read_at: string | null;
   created_at: string;
@@ -221,7 +249,7 @@ function toViewer(profile: UserProfile): Viewer {
   return {
     profileId: profile.profileId,
     slug: profile.id,
-    email: profile.email,
+    email: profile.email ?? "",
     handle: profile.handle,
     initials: profile.initials,
     avatarSeed: profile.avatarSeed,
@@ -262,6 +290,23 @@ function mapProfile(row: ProfileRow): UserProfile {
     stripeChargesEnabled: row.stripe_charges_enabled === true,
     stripePayoutsEnabled: row.stripe_payouts_enabled === true,
     points: row.points ?? undefined,
+  };
+}
+
+function mapMeetup(row: TradeMeetupRow): TradeMeetup {
+  return {
+    id: row.id,
+    tradeId: row.trade_id,
+    status: row.status,
+    placeName: row.place_name,
+    address: row.address ?? undefined,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    placeSource: row.place_source,
+    scheduledFor: row.scheduled_for ?? undefined,
+    proposedByProfileId: row.proposed_by_profile_id,
+    initiatorConfirmedAt: row.initiator_confirmed_at ?? undefined,
+    recipientConfirmedAt: row.recipient_confirmed_at ?? undefined,
   };
 }
 
@@ -377,10 +422,23 @@ async function getSupabaseViewerProfile() {
     return null;
   }
 
+  // Resolve strictly by auth binding first; fall back to an unclaimed profile
+  // with a matching email (a seeded member who hasn't run bootstrap yet).
+  // Uses `.eq()` rather than interpolating the email into `.or()` (injection).
+  const ownResponse = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("auth_user_id", user.id)
+    .limit(1)
+    .maybeSingle();
+  if (ownResponse.error) throw ownResponse.error;
+  if (ownResponse.data) return mapProfile(ownResponse.data as ProfileRow);
+
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .or(`auth_user_id.eq.${user.id},email.eq.${user.email.toLowerCase()}`)
+    .eq("email", user.email.toLowerCase())
+    .is("auth_user_id", null)
     .limit(1)
     .maybeSingle();
 
@@ -388,13 +446,34 @@ async function getSupabaseViewerProfile() {
   return data ? mapProfile(data as ProfileRow) : null;
 }
 
+// Columns safe to expose for any member. Deliberately excludes email, the
+// stripe_* payout fields, and the raw latitude/longitude/location_label, none of
+// which any other member's view needs. Public profile reads select only these so
+// sensitive data is never fetched (let alone serialized) for other users, and so
+// the DB can revoke the sensitive columns from the anon role without breaking
+// these queries (see supabase/schema.sql).
+const PUBLIC_PROFILE_COLUMNS =
+  "id, slug, name, handle, initials, location, member_since, rating, reviews, completed_trades, response_rate, bio, avatar_seed, is_online, points";
+
+// Belt-and-suspenders: even if a sensitive column is ever selected, never let it
+// reach the client for anyone but the viewer themselves.
+function redactPublicProfile(profile: UserProfile): UserProfile {
+  return {
+    ...profile,
+    email: undefined,
+    stripeAccountId: undefined,
+    stripeChargesEnabled: undefined,
+    stripePayoutsEnabled: undefined,
+  };
+}
+
 async function getProfilesByIds(profileIds: string[]) {
   if (!profileIds.length) return [];
 
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.from("profiles").select("*").in("id", profileIds);
+  const { data, error } = await supabase.from("profiles").select(PUBLIC_PROFILE_COLUMNS).in("id", profileIds);
   if (error) throw error;
-  return (data ?? []).map((row) => mapProfile(row as ProfileRow));
+  return (data ?? []).map((row) => redactPublicProfile(mapProfile(row as ProfileRow)));
 }
 
 async function getFavoriteIds(profileId: string) {
@@ -493,7 +572,12 @@ async function getBrandBySlugFromDatabase(brandSlug: string) {
 
 export async function getProductsByIdsData(ids: number[]) {
   if (!ids.length) return [];
-  return shouldUseFallbackMarketplaceData() ? getProductsByIds(ids) : getProductsByFilter({ ids });
+  // Trade views resolve items by id and must include sold/traded products —
+  // completing a trade sets `sold_at`, so the default (unsold-only) filter would
+  // render every item in a completed trade as blank.
+  return shouldUseFallbackMarketplaceData()
+    ? getProductsByIds(ids)
+    : getProductsByFilter({ ids, includeSold: true });
 }
 
 async function getConversationsForViewer(viewer: UserProfile) {
@@ -578,7 +662,7 @@ async function getTradesForViewer(viewer: UserProfile) {
   const supabase = await createSupabaseServerClient();
   const tradesResponse = await supabase
     .from("trades")
-    .select("id, initiator_profile_id, recipient_profile_id, status, message, display_timestamp, initiator_cash, recipient_cash")
+    .select("id, initiator_profile_id, recipient_profile_id, status, message, display_timestamp, initiator_cash, recipient_cash, completed_at")
     .or(`initiator_profile_id.eq.${viewer.profileId},recipient_profile_id.eq.${viewer.profileId}`)
     .order("id");
 
@@ -588,8 +672,9 @@ async function getTradesForViewer(viewer: UserProfile) {
   if (!tradeRows.length) return [];
 
   const tradeIds = tradeRows.map((trade) => trade.id);
-  const [tradeItemsResponse, relatedProfiles] = await Promise.all([
+  const [tradeItemsResponse, meetupsResponse, relatedProfiles] = await Promise.all([
     supabase.from("trade_items").select("trade_id, product_id, side").in("trade_id", tradeIds),
+    supabase.from("trade_meetups").select("*").in("trade_id", tradeIds),
     getProfilesByIds(
       Array.from(
         new Set(tradeRows.flatMap((trade) => [trade.initiator_profile_id, trade.recipient_profile_id])),
@@ -598,6 +683,12 @@ async function getTradesForViewer(viewer: UserProfile) {
   ]);
 
   if (tradeItemsResponse.error) throw tradeItemsResponse.error;
+  if (meetupsResponse.error) throw meetupsResponse.error;
+
+  const meetupByTradeId = new Map<number, TradeMeetup>();
+  for (const row of (meetupsResponse.data ?? []) as TradeMeetupRow[]) {
+    meetupByTradeId.set(row.trade_id, mapMeetup(row));
+  }
 
   const tradeItemsById = new Map<number, TradeItemRow[]>();
   for (const item of (tradeItemsResponse.data ?? []) as TradeItemRow[]) {
@@ -628,6 +719,8 @@ async function getTradesForViewer(viewer: UserProfile) {
       theirCash: isInitiator ? trade.recipient_cash ?? undefined : trade.initiator_cash ?? undefined,
       message: trade.message,
       timestamp: trade.display_timestamp,
+      completedAt: trade.completed_at ?? undefined,
+      meetup: meetupByTradeId.get(trade.id),
     } satisfies TradeProposal;
   });
 }
@@ -672,6 +765,35 @@ export async function requireViewer(next: string) {
     redirect(`/login?next=${encodeURIComponent(next)}`);
   }
   return viewer;
+}
+
+export type ViewerSavedLocation = {
+  latitude: number | null;
+  longitude: number | null;
+  label: string | null;
+};
+
+export async function getViewerSavedLocation(): Promise<ViewerSavedLocation | null> {
+  if (shouldUseFallbackMarketplaceData()) return null;
+
+  const viewerProfile = await getSupabaseViewerProfile();
+  if (!viewerProfile) return null;
+
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("latitude, longitude, location_label")
+      .eq("id", viewerProfile.profileId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    const row = data as { latitude: number | null; longitude: number | null; location_label: string | null };
+    return { latitude: row.latitude, longitude: row.longitude, label: row.location_label };
+  } catch (error) {
+    if (isRecoverableSupabaseError(error)) return null;
+    throw error;
+  }
 }
 
 export async function getBrandsPageData() {
@@ -1321,7 +1443,7 @@ async function getNotificationsForProfile(profileId: string): Promise<Notificati
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase
     .from("notifications")
-    .select("id, profile_id, type, purchase_order_id, product_id, message, read_at, created_at")
+    .select("id, profile_id, type, purchase_order_id, product_id, trade_id, message, read_at, created_at")
     .eq("profile_id", profileId)
     .order("created_at", { ascending: false })
     .limit(25);
@@ -1332,6 +1454,7 @@ async function getNotificationsForProfile(profileId: string): Promise<Notificati
     type: row.type,
     purchaseOrderId: row.purchase_order_id ?? undefined,
     productId: row.product_id ?? undefined,
+    tradeId: row.trade_id ?? undefined,
     message: row.message,
     readAt: row.read_at ?? undefined,
     createdAt: row.created_at,
@@ -1387,6 +1510,129 @@ export async function getTradesPageData() {
   };
 }
 
+async function getActiveSafeZones(): Promise<SafeZoneInput[]> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("safe_exchange_zones")
+    .select("id, name, address, latitude, longitude, kind")
+    .eq("is_active", true);
+  if (error) throw error;
+  return (data ?? []) as SafeZoneInput[];
+}
+
+export type TradeParticipantLocation = {
+  hasLocation: boolean;
+  coordinates: Coordinates | null;
+  label: string | null;
+};
+
+export type TradeDetailData = {
+  trade: TradeProposal;
+  viewer: Viewer;
+  counterpart: UserProfile | null;
+  productsById: Record<number, Product>;
+  viewerLocation: TradeParticipantLocation;
+  counterpartLocation: TradeParticipantLocation;
+  suggestions: PlaceSuggestion[];
+  midpoint: Coordinates | null;
+  mapboxConfigured: boolean;
+};
+
+type ProfileLocationRow = {
+  id: string;
+  latitude: number | null;
+  longitude: number | null;
+  location_label: string | null;
+};
+
+export async function getTradeDetailData(tradeId: number): Promise<TradeDetailData | null> {
+  if (shouldUseFallbackMarketplaceData()) return null;
+
+  const viewerProfile = await getSupabaseViewerProfile();
+  if (!viewerProfile) return null;
+
+  // RLS guarantees the viewer only sees trades they participate in.
+  const trades = await getTradesForViewer(viewerProfile);
+  const trade = trades.find((entry) => entry.id === tradeId);
+  if (!trade) return null;
+
+  const supabase = await createSupabaseServerClient();
+  const { data: tradeRow, error: tradeRowError } = await supabase
+    .from("trades")
+    .select("initiator_profile_id, recipient_profile_id")
+    .eq("id", tradeId)
+    .maybeSingle();
+  if (tradeRowError || !tradeRow) return null;
+
+  const participants = tradeRow as { initiator_profile_id: string; recipient_profile_id: string };
+  const viewerUuid = viewerProfile.profileId;
+  const isInitiator = participants.initiator_profile_id === viewerUuid;
+  const counterpartUuid = isInitiator
+    ? participants.recipient_profile_id
+    : participants.initiator_profile_id;
+
+  const productIds = Array.from(new Set([...trade.yourItemIds, ...trade.theirItemIds]));
+  const [products, participantProfiles, locationResponse, safeZones] = await Promise.all([
+    getProductsByIdsData(productIds),
+    getProfilesByIds([viewerUuid, counterpartUuid]),
+    supabase
+      .from("profiles")
+      .select("id, latitude, longitude, location_label")
+      .in("id", [viewerUuid, counterpartUuid]),
+    getActiveSafeZones(),
+  ]);
+
+  const productsById = Object.fromEntries(
+    products.map((product) => [product.id, product]),
+  ) as Record<number, Product>;
+  const profileByUuid = new Map(participantProfiles.map((profile) => [profile.profileId, profile]));
+  const counterpart = profileByUuid.get(counterpartUuid) ?? null;
+
+  const locationByUuid = new Map(
+    ((locationResponse.data ?? []) as ProfileLocationRow[]).map((row) => [row.id, row]),
+  );
+
+  const toParticipantLocation = (uuid: string): TradeParticipantLocation => {
+    const row = locationByUuid.get(uuid);
+    const hasLocation = row?.latitude != null && row?.longitude != null;
+    return {
+      hasLocation: Boolean(hasLocation),
+      coordinates: hasLocation
+        ? { latitude: row!.latitude as number, longitude: row!.longitude as number }
+        : null,
+      label: row?.location_label ?? null,
+    };
+  };
+
+  const viewerLocation = toParticipantLocation(viewerUuid);
+  const counterpartLocation = toParticipantLocation(counterpartUuid);
+
+  let suggestions: PlaceSuggestion[] = [];
+  let midpoint: Coordinates | null = null;
+  const arranging = trade.status === "accepted" || trade.meetup?.status === "proposed";
+  if (arranging && viewerLocation.coordinates && counterpartLocation.coordinates) {
+    const result = await suggestMeetupSpots(
+      viewerLocation.coordinates,
+      counterpartLocation.coordinates,
+      safeZones,
+    );
+    suggestions = result.suggestions;
+    midpoint = result.midpoint;
+  }
+
+  return {
+    trade,
+    viewer: toViewer(viewerProfile),
+    counterpart,
+    productsById,
+    viewerLocation,
+    counterpartLocation,
+    suggestions,
+    midpoint,
+    mapboxConfigured: isMapboxConfigured(),
+  };
+}
+
 export async function getPublicProfileBySlug(userSlug: string) {
   if (shouldUseFallbackMarketplaceData()) {
     return getUserById(userSlug) ?? null;
@@ -1394,10 +1640,14 @@ export async function getPublicProfileBySlug(userSlug: string) {
 
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase.from("profiles").select("*").eq("slug", userSlug).maybeSingle();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select(PUBLIC_PROFILE_COLUMNS)
+      .eq("slug", userSlug)
+      .maybeSingle();
     if (error) throw error;
     // Not found in DB — try demo users (covers fallback conversation participants)
-    return data ? mapProfile(data as ProfileRow) : (getUserById(userSlug) ?? null);
+    return data ? redactPublicProfile(mapProfile(data as ProfileRow)) : (getUserById(userSlug) ?? null);
   } catch (error) {
     if (isRecoverableSupabaseError(error)) {
       return getUserById(userSlug) ?? null;
@@ -1417,13 +1667,13 @@ export async function getProfilesBySlugs(slugs: string[]) {
 
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase.from("profiles").select("*").in("slug", uniqueSlugs);
+    const { data, error } = await supabase.from("profiles").select(PUBLIC_PROFILE_COLUMNS).in("slug", uniqueSlugs);
     if (error) throw error;
 
     const found = new Map<string, UserProfile>();
     for (const row of (data ?? []) as ProfileRow[]) {
-      const profile = mapProfile(row);
-      found.set(profile.slug, profile);
+      const profile = redactPublicProfile(mapProfile(row));
+      found.set(profile.id, profile);
     }
 
     return uniqueSlugs

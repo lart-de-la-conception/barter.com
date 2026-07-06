@@ -75,7 +75,7 @@ async function main() {
   const { error: profilesError } = await supabase.from("profiles").upsert(
     users.map((user) => ({
       id: user.profileId,
-      email: user.email.toLowerCase(),
+      email: (user.email ?? `${user.id}@seed.local`).toLowerCase(),
       slug: user.id,
       name: user.name,
       handle: user.handle,

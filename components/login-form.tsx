@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Info } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { sanitizeRedirectPath } from "@/lib/safe-redirect";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -98,7 +99,7 @@ export function LoginForm({
     }
 
     if (next) {
-      router.push(next);
+      router.push(sanitizeRedirectPath(next));
     } else {
       router.push(mode === "signup" ? "/closet?connectPayouts=1" : "/");
     }

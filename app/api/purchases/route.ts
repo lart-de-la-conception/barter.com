@@ -63,7 +63,10 @@ export async function POST(request: Request) {
 
   const currency = getPaymentDefaultCurrency();
   const platformFee = Math.round((product.price * getPaymentPlatformFeeBps()) / 10000);
-  const shouldUseTestMode = payload.testMode === true || !isStripeConfigured() || isPaymentTestModeEnabled();
+  // Test mode is a server-side deployment setting only. It must never be
+  // driven by the request body, or any buyer could acquire items for free by
+  // sending `testMode: true` against a live Stripe deployment.
+  const shouldUseTestMode = !isStripeConfigured() || isPaymentTestModeEnabled();
   const { data: order, error: orderError } = await supabase
     .from("purchase_orders")
     .insert({

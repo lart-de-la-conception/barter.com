@@ -1,7 +1,9 @@
 export type UserProfile = {
   profileId: string;
   id: string;
-  email: string;
+  // Sensitive: only populated for the viewer's own profile. Redacted (undefined)
+  // on any other member's profile so it is never serialized to the client.
+  email?: string;
   name: string;
   handle: string;
   initials: string;
@@ -121,10 +123,37 @@ export type Conversation = {
   messages: ConversationMessage[];
 };
 
+export type TradeStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "scheduled"
+  | "completed"
+  | "canceled";
+
+export type TradeMeetupStatus = "proposed" | "agreed" | "completed" | "canceled";
+
+export type TradeMeetupPlaceSource = "auto_suggested" | "curated_safe_zone" | "manual";
+
+export type TradeMeetup = {
+  id: number;
+  tradeId: number;
+  status: TradeMeetupStatus;
+  placeName: string;
+  address?: string;
+  latitude: number;
+  longitude: number;
+  placeSource: TradeMeetupPlaceSource;
+  scheduledFor?: string;
+  proposedByProfileId: string;
+  initiatorConfirmedAt?: string;
+  recipientConfirmedAt?: string;
+};
+
 export type TradeProposal = {
   id: number;
   type: "received" | "sent";
-  status: "pending" | "accepted" | "declined";
+  status: TradeStatus;
   userId: string;
   yourItemIds: number[];
   theirItemIds: number[];
@@ -132,6 +161,8 @@ export type TradeProposal = {
   theirCash?: number;
   message: string;
   timestamp: string;
+  completedAt?: string;
+  meetup?: TradeMeetup;
 };
 
 export type HeroSlide = {
@@ -187,7 +218,13 @@ export type PurchaseOrder = {
   updatedAt: string;
 };
 
-export type NotificationType = "sale_created" | "label_submitted";
+export type NotificationType =
+  | "sale_created"
+  | "label_submitted"
+  | "trade_accepted"
+  | "trade_meetup_proposed"
+  | "trade_meetup_agreed"
+  | "trade_completed";
 
 export type Notification = {
   id: string;
@@ -195,6 +232,7 @@ export type Notification = {
   type: NotificationType;
   purchaseOrderId?: string;
   productId?: number;
+  tradeId?: number;
   message: string;
   readAt?: string;
   createdAt: string;

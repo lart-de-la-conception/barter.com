@@ -2,9 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { sanitizeRedirectPath } from "@/lib/safe-redirect";
 
 export async function GET(request: NextRequest) {
-  const next = request.nextUrl.searchParams.get("next") ?? "/";
+  const next = sanitizeRedirectPath(request.nextUrl.searchParams.get("next"));
   const code = request.nextUrl.searchParams.get("code");
 
   if (!isSupabaseConfigured()) {
