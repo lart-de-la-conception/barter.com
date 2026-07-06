@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { hasSupabaseServiceRoleKey } from "@/lib/supabase/config";
+import { serverErrorResponse } from "@/lib/api-error";
 
 export async function DELETE(
   _request: Request,
@@ -36,7 +37,7 @@ export async function DELETE(
     .maybeSingle();
 
   if (fetchError) {
-    return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    return serverErrorResponse("closet.itemFetch", fetchError, "Unable to delete item.");
   }
 
   if (!product) {
@@ -53,7 +54,7 @@ export async function DELETE(
     .eq("id", productId);
 
   if (deleteError) {
-    return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    return serverErrorResponse("closet.itemDelete", deleteError, "Unable to delete item.");
   }
 
   return NextResponse.json({ ok: true });

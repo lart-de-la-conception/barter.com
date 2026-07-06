@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { hasSupabaseServiceRoleKey } from "@/lib/supabase/config";
+import { serverErrorResponse } from "@/lib/api-error";
+import { safeHttpUrl } from "@/lib/sanitize";
 
 type StartBody = {
   recipientProfileId?: string;
@@ -30,7 +32,7 @@ export async function POST(request: Request) {
   const recipientProfileId = typeof payload.recipientProfileId === "string" ? payload.recipientProfileId.trim() : "";
   const body = typeof payload.body === "string" ? payload.body.trim() : "";
   const productId = payload.productId !== undefined ? Number(payload.productId) : null;
-  const productImageUrl = typeof payload.productImageUrl === "string" ? payload.productImageUrl.trim() : null;
+  const productImageUrl = safeHttpUrl(payload.productImageUrl);
 
   if (!recipientProfileId) {
     return NextResponse.json({ error: "Recipient is required." }, { status: 400 });
@@ -53,7 +55,7 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (recipientError) {
-    return NextResponse.json({ error: recipientError.message }, { status: 500 });
+    return serverErrorResponse("conversations.recipientLookup", recipientError, "Unable to start conversation.");
   }
 
   if (!recipient) {
@@ -73,7 +75,7 @@ export async function POST(request: Request) {
   });
 
   if (messageError) {
-    return NextResponse.json({ error: messageError.message }, { status: 500 });
+    return serverErrorResponse("conversations.messageInsert", messageError, "Unable to start conversation.");
   }
 
   const { error: conversationUpdateError } = await supabase
@@ -86,7 +88,7 @@ export async function POST(request: Request) {
     .eq("id", conversationId);
 
   if (conversationUpdateError) {
-    return NextResponse.json({ error: conversationUpdateError.message }, { status: 500 });
+    return serverErrorResponse("conversations.conversationUpdate", conversationUpdateError, "Unable to start conversation.");
   }
 
   return NextResponse.json({ ok: true, conversationId });

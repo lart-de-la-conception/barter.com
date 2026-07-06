@@ -3,11 +3,18 @@ import { ensureProfileForAuthenticatedUser } from "@/lib/auth/bootstrap";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { hasSupabaseServiceRoleKey } from "@/lib/supabase/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { serverErrorResponse } from "@/lib/api-error";
 
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Trade status transitions are written with the service-role client (RLS has no
+  // client UPDATE policy on trades), after the recipient/pending checks below.
+  if (!hasSupabaseServiceRoleKey()) {
+    return NextResponse.json({ error: "Server is not configured for this operation." }, { status: 503 });
+  }
+
   const profile = await ensureProfileForAuthenticatedUser();
 
   if (!profile) {
@@ -46,15 +53,26 @@ export async function PATCH(
     return NextResponse.json({ error: "Only pending trades can be updated." }, { status: 400 });
   }
 
-  const { error: updateError } = await supabase.from("trades").update({ status }).eq("id", tradeId);
+  const admin = createSupabaseAdminClient();
+  const { data: updated, error: updateError } = await admin
+    .from("trades")
+    .update({ status })
+    .eq("id", tradeId)
+    .eq("status", "pending")
+    .select("id")
+    .maybeSingle();
 
   if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 500 });
+    return serverErrorResponse("trades.statusUpdate", updateError, "Unable to update trade.");
+  }
+
+  if (!updated) {
+    // Lost the race — someone already accepted/declined this trade.
+    return NextResponse.json({ error: "This trade is no longer pending." }, { status: 409 });
   }
 
   // Let the initiator know their offer was accepted so they can arrange the meetup.
-  if (status === "accepted" && hasSupabaseServiceRoleKey()) {
-    const admin = createSupabaseAdminClient();
+  if (status === "accepted") {
     await admin.from("notifications").insert({
       profile_id: trade.initiator_profile_id,
       type: "trade_accepted",

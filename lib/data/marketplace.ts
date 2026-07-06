@@ -491,6 +491,7 @@ async function getProductsAndSellersByFilter(filters?: {
   includeSold?: boolean;
   buyerProfileId?: string;
   archivePieceId?: number;
+  limit?: number;
 }) {
   const supabase = await createSupabaseServerClient();
   let query = supabase.from("products").select("*").order("id");
@@ -522,6 +523,9 @@ async function getProductsAndSellersByFilter(filters?: {
   }
   if (!filters?.includeSold) {
     query = query.is("sold_at", null);
+  }
+  if (typeof filters?.limit === "number") {
+    query = query.limit(filters.limit);
   }
 
   const { data: productData, error } = await query;
@@ -1235,18 +1239,23 @@ export async function getProductPageData(productId: number) {
 
   try {
     const viewerProfile = await getSupabaseViewerProfile();
-    const products = await getProductsByFilter({
-      includeNonMarketplace: viewerProfile?.isAdmin === true,
+    const includeNonMarketplace = viewerProfile?.isAdmin === true;
+    // Fetch just this product by id rather than the whole catalog.
+    const [product] = await getProductsByFilter({
+      ids: [productId],
+      includeNonMarketplace,
       includeSold: true,
     });
-    const product = products.find((item) => item.id === productId);
     if (!product) return null;
+
+    // "Similar" only needs a bounded set, not every product in the table.
+    const similarPool = await getProductsByFilter({ includeNonMarketplace, limit: 13 });
 
     return {
       product,
       seller: await getPublicProfileBySlug(product.sellerId),
       currentCloset: viewerProfile ? await getProductsByFilter({ sellerProfileId: viewerProfile.profileId, includeSold: true }) : [],
-      similar: products.filter((item) => item.id !== product.id).slice(0, 12),
+      similar: similarPool.filter((item) => item.id !== product.id).slice(0, 12),
       viewer: viewerProfile ? toViewer(viewerProfile) : null,
       initialFavoriteIds: viewerProfile ? await getFavoriteIds(viewerProfile.profileId) : [],
     };
